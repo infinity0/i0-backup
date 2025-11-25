@@ -302,7 +302,7 @@ run() {
 }
 
 subcmd="$1"
-shift
+shift || true
 
 case $subcmd in
 scheme_view )
@@ -320,7 +320,7 @@ generate_conf | generate_crontab | install_conf | generate_backup_points | run |
 test_find_method )
 	significant_lines | "find_$1" | make_backup_points "\$BACKUP_TARGET/"
 	;;
-"")
+"" | help )
 	cat <<-EOF
 	To set up your own backup specification, do:
 	1.  customise examples/backup.list, and save it to a BACKUP_ROOT directory of your choice

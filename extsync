@@ -32,7 +32,7 @@ rrsync() {
 	"$run" rsync "$@" || abort 1 "$failmsg"
 }
 
-RFLAGS="-acvxz --no-g --no-o --delete"
+RFLAGS="-acvxzH --no-g --no-o --delete"
 runsync() {(
 	local direc="$1"
 	local dir_l="$2"

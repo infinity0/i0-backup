@@ -1,0 +1,221 @@
+#!/bin/bash
+# Synchronise subtrees between remote hosts using rsync.
+
+# development directories, override on install
+SCRIPT_HOME="$(dirname "$(readlink -f "$0")")"
+DATADIR="$SCRIPT_HOME/share"
+
+set -e
+USAGE="Usage: $0 -r <REMOTE> [OPTIONS] <DIRECTION> <DIR> [<DIR> ...]"
+
+abort() { echo >&2 "$2"; exit $1; }
+
+DRYRUN=false
+CONFIRM=true
+rrsync() {
+	local run="$1"
+	shift
+
+	if $DRYRUN; then
+		echo "${PS4}cat <<'eof' | rsync --exclude-from=- $@"
+		xtsync_excludes
+		echo "eof"
+		return
+	fi
+	if $CONFIRM; then
+		"$run" rsync -n --exclude-from=<(xtsync_excludes) "$@" 2>&1 | less
+		read -p "Execute this run? [y/N] " x
+		test "$x" = "y" || return 1
+	fi
+
+	"$run" rsync --exclude-from=<(xtsync_excludes) "$@"
+}
+
+if [[ "${RSYNC_NO_DELETE}" = 1 ]]; then
+	RSYNC_FLAGS="-acvxz --no-g --no-o ${RSYNC_FLAGS}"
+else
+	RSYNC_FLAGS="-acvxz --no-g --no-o --delete ${RSYNC_FLAGS}"
+fi
+runsync() {(
+	local direc="$1"
+	local dir_l="$2"
+	local dir_r="$3"
+	local rcdir="$4"
+	if [ -n "$rcdir" ]; then
+		cd "$rcdir"
+	else
+		cd "$dir_l"
+	fi
+	# we pass -u explicitly here outside of RSYNC_FLAGS because we need to
+	# exclude it from the rsync invocation in rundiff for that to work
+	case "$direc" in
+	u|up)
+		xtsync_pre_u || abort 1 "$0: xtsync_pre_u failed"
+		rrsync xtsync_wrap_u -u $RSYNC_FLAGS "$dir_l/" "$dir_r/"
+		xtsync_post_u || abort 1 "$0: xtsync_post_u failed"
+		;;
+	d|down)
+		xtsync_pre_d || abort 1 "$0: xtsync_pre_d failed"
+		rrsync xtsync_wrap_d -u $RSYNC_FLAGS "$dir_r/" "$dir_l/"
+		xtsync_post_d || abort 1 "$0: xtsync_post_d failed"
+		;;
+	esac
+)}
+
+type colordiff >/dev/null 2>&1 && DIFF=colordiff || {
+	echo >&2 "colordiff(1) not found; using diff(1) instead"
+	DIFF=diff
+}
+rundiff() {(
+	local direc="$1"
+	local dir_l="$2"
+	local dir_r="$3"
+	local rcdir="$4"
+	if [ -n "$rcdir" ]; then
+		cd "$rcdir"
+	else
+		cd "$dir_l"
+	fi
+
+	tempdir="$(mktemp -d)"
+	cleanup () {
+		rm -rf "$tempdir"
+	}
+	trap 'x=$?; cleanup; trap - EXIT' EXIT HUP INT QUIT PIPE TERM
+	# sync using local copy first, to save some bandwidth
+	rsync --exclude-from=<(xtsync_excludes) $RSYNC_FLAGS -q "$dir_l/" "$tempdir/"
+	rsync --exclude-from=<(xtsync_excludes) $RSYNC_FLAGS -q "$dir_r/" "$tempdir/"
+	case "$direc" in
+	u|up)
+		$DIFF -Nru "$tempdir/" "$dir_l/" | less -R
+		;;
+	d|down)
+		$DIFF -Nru "$dir_l/" "$tempdir/" | less -R
+		;;
+	esac
+)}
+
+findconfig() {
+	if [ -f "$1" ]; then
+		printf '%s\n' "${PWD%/}"
+		if [ -z "$2" ]; then
+			return
+		fi
+	fi
+	if [ "$PWD" = / ]; then
+		false
+	else
+		# a subshell so that we don't affect the caller's $PWD
+		(cd .. && findconfig "$1")
+	fi
+}
+
+tab_lookup() {
+	local key="$1"
+	shift
+	tac "$@" | { while read x y; do if [[ "$x" = "$key" ]]; then printf "%s\n" "$y"; break; fi; done; }
+}
+
+abspath() { cd "$1"; pwd; cd "$OLDPWD"; }
+
+. "$DATADIR/xtsync.rc.default" # load defaults
+run() {(
+	local cmd="$1"
+	local direc="$2"
+	local dir="$3"
+
+	local rcdir="$(cd "$dir"; findconfig .xtsync.rc || true)"
+	if [ -f "$rcdir/.xtsync.rc" ]; then
+		. "$rcdir/.xtsync.rc"
+	fi
+
+	local tabs
+	mapfile -t tabs < <(cd "$dir"; findconfig .xtsync.tab 1 | sed 's,$,/.xtsync.tab,g')
+
+	if [[ "${#tabs[@]}" = 0 ]]; then
+		echo >&2 "no .xtsync.tab found; it is recommended you create one in ~ or wherever the local base is"
+	fi
+
+	local host_l="$(hostname)"
+	local host_r="${REMOTE:-$(tab_lookup .default.remote "${tabs[@]}")}"
+	test -n "$host_r" || { echo >&2 "could not determine remote host for dir: $dir"; return 1; }
+	local base_l="$(eval printf "$(tab_lookup "$host_l" "${tabs[@]}")")"
+	local base_r="$host_r:$(tab_lookup "$host_r" "${tabs[@]}")"
+
+	#local subdir="$(realpath --relative-to="$base_l" "$dir")"
+	test -z "$rcdir" -o "${rcdir#$base_l/}" != "$rcdir" || { echo >&2 "not under local base $base_l: rcdir $rcdir"; return 1; }
+	local dir_l="$(abspath "${dir:-.}")"
+	test "${dir_l#$base_l/}" != "$dir_l" || { echo >&2 "not under local base $base_l: $dir"; return 1; }
+	local dir_r="$base_r/${dir_l#$base_l/}"
+
+	#echo >&2 "cmd    $cmd"
+	#echo >&2 "direc  $direc"
+	#echo >&2 "dir_l  $dir_l"
+	#echo >&2 "dir_r  $dir_r"
+	#echo >&2 "rcdir  $rcdir"
+
+	$cmd "$direc" "$dir_l" "$dir_r"
+)}
+
+RUNCMD=runsync
+while getopts r:dnyh o; do
+	case $o in
+	r ) REMOTE="$OPTARG";;
+	d ) RUNCMD=rundiff;;
+	n ) DRYRUN=true;;
+	y ) CONFIRM=false;;
+	h )
+		cat <<-EOF
+		$USAGE
+
+		Synchronise subtrees between remote hosts using rsync.
+
+		This should be largely compatible with unison(1) when using the same BASE
+		directories (called "roots" in unison), but is a bit easier to automate.
+
+		This command runs several instances of ssh(1). It is recommended that you
+		use a remote Host where you've configured a ControlPath; see ssh_config(5)
+		for details. Before running this script, run \`ssh -M \$host\` to set up the
+		master connection, and this script will then run through that. (This tip is
+		useful for unison too.)
+
+		Arguments:
+		DIRECTION           Up = sync local to remote; Down = sync remote to local.
+		DIR                 Directory to sync. If \$DIR = \$LOCAL/\$RELATIVE,
+		                    then \$DIR will be synced to/from \$REMOTE/\$RELATIVE.
+
+		Options:
+		  -r REMOTE         Remote host name, in the form accepted by ssh(1).
+		  -n                Print the command to be run, rather than running it.
+		  -d                Print a diff of what rsync would apply. Practically,
+		                    this syncs to a temporary directory then runs diff(1) on
+		                    it. This is slower but prettier than unison(1).
+		  -y                Skip confirmation request.
+		  -h                This help text.
+		EOF
+		exit 1
+		;;
+	\? ) echo $USAGE; exit 1;;
+	esac
+done
+shift `expr $OPTIND - 1`
+
+DIREC="$1"
+
+case "$DIREC" in
+u|up);;
+d|down);;
+*)
+	abort 2 "specify a direction, up or down."
+	;;
+esac
+shift
+
+test -n "$*" || abort 2 "no paths selected"
+
+x=0
+for D in "$@"; do
+	run "$RUNCMD" "$DIREC" "$D" || y=$?
+	x=$(( x > y ? x : y ))
+done
+exit "$x"

@@ -1,0 +1,42 @@
+# xtsync rc shell snippet
+# save this as .xtsync.rc in any subdir of the base, it applies to that dir and
+# all its subdirs EXCEPT those with their own .xtsync.rc.
+#
+# all hook/wrap functions are run in the dir where they are defined
+
+# list of rsync excludes
+# see `man rsync` its `--exclude-from=FILE` section for details
+xtsync_excludes() {
+	cat <<-'eof'
+	eof
+}
+
+# this function is run pre-upload
+xtsync_pre_u() {
+	true
+}
+
+# this function is used to wrap the upload command
+xtsync_wrap_u() {
+	env "$@"
+}
+
+# this function is run post-upload
+xtsync_post_u() {
+	true
+}
+
+# this function is run pre-download
+xtsync_pre_d() {
+	true
+}
+
+# this function is used to wrap the download command
+xtsync_wrap_d() {
+	env "$@"
+}
+
+# this function is run post-download
+xtsync_post_d() {
+	true
+}

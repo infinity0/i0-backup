@@ -1,0 +1,4 @@
+master          ~/backups
+host-a          ~
+host-b          ~
+.default.remote master

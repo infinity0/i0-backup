@@ -2,7 +2,7 @@ Contents
 
 - [apt-clean](#apt-clean): clean and simplify APT package state
 - [bmount](#bmount): mirror subtrees of a filesystem
-- [extsync](#extsync): sync subtrees between remote hosts
+- [xtsync](#xtsync): sync subtrees between remote hosts
 - [git-etc](#git-etc): track/restore system files and metadata
 - [rsconf](#rsconf): simple backup framework for rsnapshot
 - [luksblk](#luksblk): manage simple LUKS block devices
@@ -158,7 +158,7 @@ bmount; (-) means a disadvantage.
 
 ----
 
-# extsync
+# xtsync
 
 Synchronise subtrees between remote hosts using rsync.
 
@@ -180,7 +180,7 @@ TODO
 
 ## Related
 
-After I wrote extsync, I found out about [unison][] which works with the same
+After I wrote xtsync, I found out about [unison][] which works with the same
 idea of a "base tree" and allows the user to select subtrees of that to sync.
 The major difference is that it does a *lot* of prompting; sometimes you just
 want the tool to shut up and work. You can use this tool and unison on the same

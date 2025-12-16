@@ -66,7 +66,7 @@ git_etc_meta_r() {
 	# only store metadata for files tracked by bmount
 	for host_bind in $(grep -o -P '(^|.*/).bmrc\s' ".gitmeta"); do
 		tail -n+2 "$host_bind" | while read source; do
-			source="$(echo -e "$source")"
+			source="$(printf "%b" "$source")"
 			source="${source%/}"
 			echo "$(dirname "$host_bind")/${source#/}"
 		done

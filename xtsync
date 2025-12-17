@@ -139,12 +139,12 @@ run() {(
 	local host_l="$(hostname)"
 	local host_r="${REMOTE:-$(tab_lookup .default.remote "${tabs[@]}")}"
 	test -n "$host_r" || { echo >&2 "could not determine remote host for dir: $dir"; return 1; }
-	local base_l="$(eval printf "$(tab_lookup "$host_l" "${tabs[@]}")")"
+	local base_l="$(python -c 'import sys, os; print(os.path.expanduser(sys.argv[1]))' "$(tab_lookup "$host_l" "${tabs[@]}")")"
 	local base_r="$host_r:$(tab_lookup "$host_r" "${tabs[@]}")"
 
 	#local subdir="$(realpath --relative-to="$base_l" "$dir")"
 	test -z "$rcdir" -o "${rcdir#$base_l/}" != "$rcdir" || { echo >&2 "not under local base $base_l: rcdir $rcdir"; return 1; }
-	local dir_l="$(abspath "${dir:-.}")"
+	local dir_l="$(abspath "${dir:-.}")/."
 	test "${dir_l#$base_l/}" != "$dir_l" || { echo >&2 "not under local base $base_l: $dir"; return 1; }
 	local dir_r="$base_r/${dir_l#$base_l/}"
 

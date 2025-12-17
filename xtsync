@@ -14,21 +14,35 @@ DRYRUN=false
 CONFIRM=true
 rrsync() {
 	local run="$1"
-	shift
+	local dir_src="$2"
+	local dir_dst="$3"
+	local subdir="$4"
+	shift 4
+
+	dir_src="${dir_src%/}/"
+	dir_dst="${dir_dst%/}/"
+	local xall='/*'
+	if [[ "$subdir" == "." ]]; then
+		xall=''
+	fi
 
 	if $DRYRUN; then
-		echo "${PS4}cat <<'eof' | rsync --exclude-from=- $@"
+		printf "${PS4}cat <<'eof' | rsync -n --exclude-from=- --include=/%q --exclude='%s' $* %q %q\n" "$subdir" "$xall" "$dir_src" "$dir_dst"
 		xtsync_excludes
-		echo "eof"
+		printf "eof\n"
 		return
 	fi
+
 	if $CONFIRM; then
-		"$run" rsync -n --exclude-from=<(xtsync_excludes) "$@" 2>&1 | less
+		"$run" rsync -n \
+		  --exclude-from=<(xtsync_excludes) --include="/$subdir" --exclude="$xall" \
+		  "$@" "$dir_src" "$dir_dst" 2>&1 | less
 		read -p "Execute this run? [y/N] " x
 		test "$x" = "y" || return 1
 	fi
-
-	"$run" rsync --exclude-from=<(xtsync_excludes) "$@"
+	"$run" rsync \
+	  --exclude-from=<(xtsync_excludes) --include="/$subdir" --exclude="$xall" \
+	  "$@" "$dir_src" "$dir_dst"
 }
 
 if [[ "${RSYNC_NO_DELETE}" = 1 ]]; then
@@ -40,23 +54,19 @@ runsync() {(
 	local direc="$1"
 	local dir_l="$2"
 	local dir_r="$3"
-	local rcdir="$4"
-	if [ -n "$rcdir" ]; then
-		cd "$rcdir"
-	else
-		cd "$dir_l"
-	fi
+	local subdir="$4"
+
 	# we pass -u explicitly here outside of RSYNC_FLAGS because we need to
 	# exclude it from the rsync invocation in rundiff for that to work
 	case "$direc" in
 	u|up)
 		xtsync_pre_u || abort 1 "$0: xtsync_pre_u failed"
-		rrsync xtsync_wrap_u -u $RSYNC_FLAGS "$dir_l/" "$dir_r/"
+		rrsync xtsync_wrap_u "$dir_l" "$dir_r" "$subdir" -u $RSYNC_FLAGS
 		xtsync_post_u || abort 1 "$0: xtsync_post_u failed"
 		;;
 	d|down)
 		xtsync_pre_d || abort 1 "$0: xtsync_pre_d failed"
-		rrsync xtsync_wrap_d -u $RSYNC_FLAGS "$dir_r/" "$dir_l/"
+		rrsync xtsync_wrap_d "$dir_r" "$dir_l" "$subdir" -u $RSYNC_FLAGS
 		xtsync_post_d || abort 1 "$0: xtsync_post_d failed"
 		;;
 	esac
@@ -70,12 +80,7 @@ rundiff() {(
 	local direc="$1"
 	local dir_l="$2"
 	local dir_r="$3"
-	local rcdir="$4"
-	if [ -n "$rcdir" ]; then
-		cd "$rcdir"
-	else
-		cd "$dir_l"
-	fi
+	local subdir="$4"
 
 	tempdir="$(mktemp -d)"
 	cleanup () {
@@ -83,14 +88,14 @@ rundiff() {(
 	}
 	trap 'x=$?; cleanup; trap - EXIT' EXIT HUP INT QUIT PIPE TERM
 	# sync using local copy first, to save some bandwidth
-	rsync --exclude-from=<(xtsync_excludes) $RSYNC_FLAGS -q "$dir_l/" "$tempdir/"
-	rsync --exclude-from=<(xtsync_excludes) $RSYNC_FLAGS -q "$dir_r/" "$tempdir/"
+	DRYRUN=false CONFIRM=false rrsync env "$dir_l" "$tempdir" "$subdir" -q $RSYNC_FLAGS
+	DRYRUN=false CONFIRM=false rrsync env "$dir_r" "$tempdir" "$subdir" -q $RSYNC_FLAGS
 	case "$direc" in
 	u|up)
-		$DIFF -Nru "$tempdir/" "$dir_l/" | less -R
+		$DIFF -Nru "$tempdir" "$dir_l" | less -R
 		;;
 	d|down)
-		$DIFF -Nru "$dir_l/" "$tempdir/" | less -R
+		$DIFF -Nru "$dir_l" "$tempdir" | less -R
 		;;
 	esac
 )}
@@ -113,7 +118,14 @@ findconfig() {
 tab_lookup() {
 	local key="$1"
 	shift
-	tac "$@" | { while read x y; do if [[ "$x" = "$key" ]]; then printf "%s\n" "$y"; break; fi; done; }
+	tac "$@" | {
+	while read x y; do
+		if [[ "$x" = "$key" ]]; then
+			printf "%s\n" "${y%/}" # strip trailing /
+			break
+		fi
+	done
+	}
 }
 
 abspath() { cd "$1"; pwd; cd "$OLDPWD"; }
@@ -122,11 +134,14 @@ abspath() { cd "$1"; pwd; cd "$OLDPWD"; }
 run() {(
 	local cmd="$1"
 	local direc="$2"
-	local dir="$3"
+	local dir="$(realpath "$3")" # realpath = same behaviour as git in finding .git
 
-	local rcdir="$(cd "$dir"; findconfig .xtsync.rc || true)"
-	if [ -f "$rcdir/.xtsync.rc" ]; then
-		. "$rcdir/.xtsync.rc"
+	# we must set the transfer-root to the same directory where .xtsync.rc is
+	# so that rsync interprets the exclude rules correctly. to select the right
+	# subdir within this, we pass --include="/$subdir" --exclude="/*"
+	local dir_l="$(cd "$dir"; findconfig .xtsync.rc || true)"
+	if [ -f "$dir_l/.xtsync.rc" ]; then
+		. "$dir_l/.xtsync.rc"
 	fi
 
 	local tabs
@@ -142,19 +157,33 @@ run() {(
 	local base_l="$(python -c 'import sys, os; print(os.path.expanduser(sys.argv[1]))' "$(tab_lookup "$host_l" "${tabs[@]}")")"
 	local base_r="$host_r:$(tab_lookup "$host_r" "${tabs[@]}")"
 
-	#local subdir="$(realpath --relative-to="$base_l" "$dir")"
-	test -z "$rcdir" -o "${rcdir#$base_l/}" != "$rcdir" || { echo >&2 "not under local base $base_l: rcdir $rcdir"; return 1; }
-	local dir_l="$(abspath "${dir:-.}")/."
-	test "${dir_l#$base_l/}" != "$dir_l" || { echo >&2 "not under local base $base_l: $dir"; return 1; }
-	local dir_r="$base_r/${dir_l#$base_l/}"
+	if [[ -n "$DEBUG" ]]; then
+		echo >&2 "cmd    $cmd"
+		echo >&2 "direc  $direc"
+		echo >&2 "base_l $base_l"
+		echo >&2 "base_r $base_r"
+	fi
 
-	#echo >&2 "cmd    $cmd"
-	#echo >&2 "direc  $direc"
-	#echo >&2 "dir_l  $dir_l"
-	#echo >&2 "dir_r  $dir_r"
-	#echo >&2 "rcdir  $rcdir"
+	if [[ -z "$dir_l" ]]; then
+		dir_l="$dir"
+	fi
 
-	$cmd "$direc" "$dir_l" "$dir_r"
+	if [[ "${dir_l}"/. != "${base_l}"/* ]]; then
+		echo >&2 "not under local base $base_l: dir_l $dir_l"
+		return 1
+	fi
+
+	local subdir="$(realpath --relative-to="$dir_l" "$dir")"
+	local dir_r="$base_r/${dir_l#$base_l}"
+
+	if [[ -n "$DEBUG" ]]; then
+		echo >&2 "dir_l  $dir_l"
+		echo >&2 "dir    $dir"
+		echo >&2 "subdir $subdir"
+		echo >&2 "dir_r  $dir_r"
+	fi
+
+	$cmd "$direc" "$dir_l" "$dir_r" "$subdir"
 )}
 
 RUNCMD=runsync

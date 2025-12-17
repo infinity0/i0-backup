@@ -7,7 +7,7 @@ BLK="${BLK:-block}"
 BLK_FS="${BLK_FS:-ext4}"
 LUKS_CIPHER="${LUKS_CIPHER:-aes-xts-plain64}"
 
-set -e
+set -e -o pipefail # POSIX:2022
 
 S_UNKNOWN=UNKNOWN
 S_NODEV_FILE=NODEV_FILE

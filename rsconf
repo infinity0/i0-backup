@@ -8,10 +8,11 @@
 SCRIPT_HOME="$(dirname "$(readlink -f "$0")")"
 DATADIR="$SCRIPT_HOME/share"
 
-set -e
+set -e -o pipefail # POSIX:2022
+
 abort() { local x="$1"; shift; echo >&2 "rsconf: $@"; exit $x; }
 
-TMPDIR="/tmp"
+TMPDIR="${TMPDIR:-/tmp}"
 TMP_PREFIX="default"
 set_tmp_prefix() {
 	TMP_PREFIX="$(echo "$1" | sha256sum | cut -b1-8)-$2"

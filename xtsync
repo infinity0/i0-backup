@@ -5,8 +5,7 @@
 SCRIPT_HOME="$(dirname "$(readlink -f "$0")")"
 DATADIR="$SCRIPT_HOME/share"
 
-set -e
-USAGE="Usage: $0 -r <REMOTE> [OPTIONS] <DIRECTION> <DIR> [<DIR> ...]"
+set -e -o pipefail # POSIX:2022
 
 abort() { echo >&2 "$2"; exit $1; }
 
@@ -187,6 +186,7 @@ run() {(
 )}
 
 RUNCMD=runsync
+USAGE="Usage: $0 -r <REMOTE> [OPTIONS] <DIRECTION> <DIR> [<DIR> ...]"
 while getopts r:dnyh o; do
 	case $o in
 	r ) REMOTE="$OPTARG";;

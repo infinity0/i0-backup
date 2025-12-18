@@ -106,14 +106,18 @@ Mirror subtrees between different parts of the filesystem using bind-mounts.
 Example use-cases:
 
 - you want to put specific parts of a server config under version control, but
-  don't want to blanket-track everything under /etc. see git-meta below to
-  backup/restore metadata like user, group, permissions.
+  don't want to blanket-track everything under /etc.
 - you want to store secrets in some secure medium, and temporarily link it to a
   location where it can be used (e.g. ~) but only when you need it.
 
+If keeping these files in git, bmount integrates with git-meta (see below) so
+that you can backup/restore file metadata like user, group, permissions. In
+this case, you should not use git-meta directly but only via bmount - more
+details in the help (-h) output.
+
 ## Pre-use
 
-Depends: python (>= 2.7), linux (>= 2.6.26)
+Depends: python3, sudo, util-linux, git
 
 ## Use
 
@@ -122,35 +126,36 @@ TODO
 ## Related
 
 Two similar tools exist already, but weren't suited to my purposes. However,
-they may be more suitable for what you need. (+) means an advantage compared to
-bmount; (-) means a disadvantage.
+they may be more suitable for what you need. (+) means an advantage for bmount,
+(-) means a disadvantage, (~) is debatable.
 
-[etckeeper][]:
+vs [etckeeper][]:
 
-- (+) "fire and forget" - very little manual config needed to setup initially.
-  however, restoring your backup later may not be so easy, due to the spam of
-  unnecessary extra information (see next point).
-- (-) cannot handle arbitrary subtrees; tracks too many files (all of /etc) by
-  default, with no simple way to ignore most of them
+- (+) bmount can put the repo somewhere other than /etc/.git
+- (+) etckeeper cannot handle arbitrary subtrees; tracks too many files (all of
+  /etc) by default, with no simple way to ignore most of them
 	- e.g. I really don't care about /etc/rc*.d, or /etc/ssl/certs, and I don't
 	  care about config changes due to package upgrades
 	- trivial differences (e.g. different package versions) make it hard to
 	  compare systems that are otherwise identical in the *important* areas.
-- (-) only one repo that is permanently active and holds everything
-- git-meta provides some additional advantages over the git-specific parts of
-  etckeeper; see below. bmount+git-meta is my take on etckeeper.
+- (+) etckeeper uses only one repo that is permanently active and holds everything
+- (+) bmount's git-meta integration provides some additional advantages over
+  the git-specific parts of etckeeper, see below for details.
+- (~) etckeeper is more "fire and forget" - very little manual config needed to
+  setup initially. however, restoring your backup later may not be so easy, due
+  to the spam of unnecessary extra information (see next point).
 
-[live-persist][]:
+vs [live-persist][]:
 
-- can handle arbitrary subtrees, like bmount
-- (+) is even more flexible in the types of mirror it can handle: bind-mounts,
-  symlink trees, and different types of unionfs.
-- (-) can only read config from the root of a file system
-- (-) can only activate the mirror, not deactivate it. whilst active, cannot
+- (0) live-persist can handle arbitrary subtrees, like bmount
+- (+) it can only read config from the root of a file system
+- (+) it can only activate the mirror, not deactivate it. whilst active, cannot
   edit the config (e.g. adding new subtrees) and have it applied automatically
   onto the existing activation.
-- intended for use with the "live-boot" system by Debian, so a bit harder to
-  install on a normal system
+- (+) it's intended for use with the "live-boot" system by Debian, so a bit
+  harder to install on a normal system - including normal Debian systems
+- (-) it's even more flexible than bmount in the types of mirror it can handle:
+  bind-mounts, but also symlink trees and different types of unionfs.
 
 [etckeeper]: http://joeyh.name/code/etckeeper/
 [live-persist]: http://live-systems.org/manpages/stable/en/html/persistence.conf.5.html
@@ -161,8 +166,8 @@ bmount; (-) means a disadvantage.
 
 Track and restore file metadata in git.
 
-When used together with bmount, it can give you a bit more flexibility than
-etckeeper:
+This is a basic script (mostly written by someone else) that can be installed
+as a git hook. It is generally a bit more flexible than etckeeper:
 
 - can put the repo somewhere other than /etc/.git
 - does not need to run as root (except when restoring). therefore, can split
@@ -170,6 +175,9 @@ etckeeper:
 	- public config in a repo owned by a normal user. you can share this with
 	  others for backup/review.
 	- private config (e.g. passwords) in a repo owned by root
+
+We tend to use it via bmount as part of its own git hooks, so we never actually
+need to touch it directly (apart from restoring).
 
 ## Pre-use
 

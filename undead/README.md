@@ -2,7 +2,6 @@ Contents
 
 - [btsync](#btsync): synchronise a file over bittorrent
 - [caddr-ln](#caddr-ln): manage a repository of content-addressed storage
-- [git-etc](#git-etc): track/restore system files and metadata
 
 Various ad-hoc tools for sysadmin/backup purposes, bit-rotted scripts that I'm
 not currently using, but may revive in future.
@@ -146,11 +145,3 @@ this reverse proxy setup, `--fallback_ip` is likely necessary in most cases.
 # caddr-ln
 
 Never even bothered writing docs. RTFS.
-
-----
-
-# git-etc
-
-This is a glorified wrapper around bmount and git-meta that simplified some
-stuff, but I realised the benefit of this was not sufficient enough to justify
-the overhead of introducing another tool that adds extra usage idosyncracies.

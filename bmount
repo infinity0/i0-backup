@@ -560,6 +560,8 @@ class BindFile(object):
 			self.save()
 
 def install_git_hook(stdout, git_dir, hook, subcmd):
+	# TODO [#B]: use git rev-parse --git-path so this works in detached worktrees
+	# workaround for now is to run it in the main worktree
 	hookfile = f"{git_dir}/hooks/{hook}"
 	with (sys.stdout if stdout else open(hookfile, "x")) as fp:
 		print(f"""#!/bin/sh

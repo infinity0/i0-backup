@@ -54,6 +54,7 @@ runsync() {(
 	local dir_l="$2"
 	local dir_r="$3"
 	local subdir="$4"
+	cd "$dir_l" # to run hooks
 
 	# we pass -u explicitly here outside of RSYNC_FLAGS because we need to
 	# exclude it from the rsync invocation in rundiff for that to work

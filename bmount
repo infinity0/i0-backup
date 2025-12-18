@@ -2,12 +2,11 @@
 """
 Mirror subtrees between different parts of the filesystem using bind-mounts.
 """
-from __future__ import print_function
-
 import argparse
 import logging
 import os
 import os.path
+import stat
 import subprocess
 import sys
 import time
@@ -48,9 +47,9 @@ def p_get_device(p):
 	# WONTFIX(infinity0): it also turns \n into ? in the output, but this is
 	# too uncommon to bother accounting for. (it handles \n in the input fine.)
 	output = subprocess.check_output(["df", "--output=source", p])
-	source = output.decode("ascii").split('\n')
+	source = output.decode("utf-8").split('\n')
 	output = subprocess.check_output(["df", "--output=target", p])
-	target = output.decode("ascii").split('\n')
+	target = output.decode("utf-8").split('\n')
 	return source[-2], target[-2]
 
 def f_type(p):
@@ -97,13 +96,13 @@ def run_unstrict(cmd, *args, **kwargs):
 		logging.info("running %r" % cmd)
 		subprocess.check_output(cmd, *args, **kwargs)
 	except subprocess.CalledProcessError as e:
-		logging.warn("command failed: %s" % e.output)
+		logging.warning("command failed: %s" % e.output)
 
 def encode_path(path):
-	return path.encode("unicode_escape").decode("ascii")
+	return path.encode("unicode_escape").decode("utf-8")
 
 def decode_path(path):
-	return path.encode("ascii").decode("unicode_escape")
+	return path.encode("utf-8").decode("unicode_escape")
 
 
 class Points(object):
@@ -181,7 +180,7 @@ class Points(object):
 
 class Bind(object):
 
-	def __init__(self, source, target):
+	def __init__(self, source, target, opts, git_top=None):
 		self.source = p_to_dir(os.path.abspath(source))
 		self.target = p_to_dir(os.path.abspath(target))
 		if self.source == self.target:
@@ -189,6 +188,8 @@ class Bind(object):
 		self.points = Points()
 		self._state = None
 		self._state_atime = 0
+		self.opts = opts
+		self.git_top = git_top
 
 	def _readMounts(self):
 		logging.info("reading mounts from %s", MOUNTINFO)
@@ -210,7 +211,7 @@ class Bind(object):
 					pp = p_to_abs(os.path.relpath(fs_file, self.target))
 					pp = p_to_dir(pp) if os.path.isdir(fs_file) else pp
 					if pp in state:
-						logging.warn("multiple mounts on: %s", pp)
+						logging.warning("multiple mounts on: %s", pp)
 					if pp not in self.points.pts:
 						src, dst = self.getEndpoints(pp)
 						src_dev, base_pt = p_get_device(src)
@@ -223,7 +224,7 @@ class Bind(object):
 						if fs_spec != src_dev or mount_rel != p_to_abs(src_mount_rel):
 							logging.debug("ignore (seemingly) non-bmount mount point: %s" % encode_path(fs_file))
 							continue
-						logging.warn("extraneous mount on: %s", pp)
+						logging.warning("extraneous mount on: %s", pp)
 					state.append(pp)
 		return state
 
@@ -236,9 +237,9 @@ class Bind(object):
 				self._state_atime = atime
 			except Exception as e:
 				traceback.print_exc()
-				logging.warn("unable to parse current bind state: %s", e)
-				logging.warn("I will continue, but avoid touching the system")
-				logging.warn("You may also run umountForce to try to fix the issue")
+				logging.warning("unable to parse current bind state: %s", e)
+				logging.warning("I will continue, but avoid touching the system")
+				logging.warning("You may also run umountForce to try to fix the issue")
 				self._state = Points(["/invalid_state_detected"])
 				# i.e. assert INVALID but avoid infinite recursion
 				assert set(self._state.pts) - set(self.points.pts)
@@ -266,6 +267,16 @@ class Bind(object):
 
 	def _mountTry(self, pp):
 		src, dst = self.getEndpoints(pp)
+		logging.debug("_mountTry %s %s %s %s", src, dst, self.git_top, self.opts.over_dirty)
+		# we don't need 'sudo git' here since we always run this on an umounted bmount
+		if (self.git_top is not None
+		  and os.path.commonpath([self.git_top, dst]) == self.git_top
+		  and subprocess.call(["git", "-C", self.git_top, "diff", "--quiet", "--", dst]) != 0):
+			if self.opts.over_dirty:
+				logging.warning("mounting over a dirty git working tree: %s", dst)
+				logging.warning("changes there would be overwritten by 'u-git-restore' if you (or a hook) runs it")
+			else:
+				raise ValueError("refusing to mount over a dirty git working tree, pass -o to override")
 		run_unstrict(["sudo", "mount", "-B", src, dst])
 		self._state = None # invalidate cache
 
@@ -447,10 +458,25 @@ class Bind(object):
 
 class BindFile(object):
 
-	def __init__(self, fn=DEFAULT_BINDFILE):
+	def __init__(self, opts, fn=DEFAULT_BINDFILE):
 		self.fn = fn
 		self.args = None
 		self.bind = None
+		self.opts = opts # used for e.g. over_dirty in _mountTry()
+		try:
+			self.git_dir = subprocess.check_output(
+			  ["git", "-C", self.dir(), "rev-parse", "--path-format=absolute", "--git-dir"],
+			  stderr=subprocess.DEVNULL).decode("utf-8").rstrip()
+			self.git_top = subprocess.check_output(
+			  ["git", "-C", self.dir(), "rev-parse", "--path-format=absolute", "--show-toplevel"],
+			  stderr=subprocess.DEVNULL).decode("utf-8").rstrip()
+		except subprocess.CalledProcessError as e:
+			# rev-parse is only documented as "return non-zero" on failure, not specifically 128
+			self.git_dir = None
+			self.git_top = None
+
+	def dir(self):
+		return os.path.dirname(os.path.abspath(self.fn))
 
 	def parseArgs(self, *args):
 		if not args:
@@ -493,13 +519,13 @@ class BindFile(object):
 		if not os.path.isabs(dst):
 			dst = os.path.join(os.path.dirname(self.fn), dst)
 
-		bind = Bind(src, dst)
+		bind = Bind(src, dst, opts=self.opts, git_top=self.git_top)
 		logging.debug("file read: %s: %s to %s", self.fn, bind.source, bind.target)
 		try:
 			for point in points:
 				bind.insert(point, dryrun=True, noreport=True)
 		except:
-			logging.warn("error loading file: %s", self.fn)
+			logging.warning("error loading file: %s", self.fn)
 			raise
 
 		self.args = args
@@ -528,6 +554,17 @@ class BindFile(object):
 		if not dryrun:
 			self.save()
 
+def install_git_hook(stdout, git_dir, hook, subcmd):
+	hookfile = f"{git_dir}/hooks/{hook}"
+	with (sys.stdout if stdout else open(hookfile, "x")) as fp:
+		print(f"""#!/bin/sh
+SUBDIRECTORY_OK=1 . "$(git --exec-path)/git-sh-setup"
+cd_to_toplevel
+require_work_tree
+bmount {subcmd}
+""", end="", file=fp)
+	if not stdout:
+		os.chmod(hookfile, os.stat(hookfile).st_mode | 0o0111)
 
 def main(*args):
 	parser = argparse.ArgumentParser()
@@ -540,8 +577,9 @@ def main(*args):
 	  metavar='DIR', dest='binddir_down')
 	parser.add_argument("-v", "--verbose", help="increase output verbosity",
 	  action="count", default=0)
-	subps = parser.add_subparsers(help="sub-command to run",
-	  metavar="SUBCMD")
+	subps = parser.add_subparsers(help="sub-command to run", metavar="SUBCMD")
+	# SUBCMD makes the help text nicer but means we have to fuck around with
+	# set_defaults() everywhere below
 
 	subp = subps.add_parser("init", help="init or reset a bind file", aliases=["n"])
 	subp.add_argument("-y", "--yes", help="force-reset bind fb bile even if it already exists",
@@ -555,6 +593,10 @@ def main(*args):
 	subp = subps.add_parser("insert", help="insert a point", aliases=["i"])
 	subp.add_argument("-n", "--dry-run", help="print what would be done, don't actually do",
 	  action="store_true", default=False)
+	subp.add_argument("-o", "--over-dirty", action="store_true", default=False,
+	  help="proceed mounting even if git working tree is dirty, thereby hiding "
+	  "these changes. They will be OVERWRITTEN LATER if you (or a git hook) runs "
+	  "'u-git-restore', so pass this option only if you are OK with this!")
 	subp.add_argument("points", nargs='+', help="point to insert")
 	subp.set_defaults(subcmd="insert")
 	subp = subps.add_parser("remove", help="remove a point", aliases=["r"])
@@ -570,11 +612,42 @@ def main(*args):
 	subp = subps.add_parser("list", help="list all points", aliases=["l"])
 	subp.set_defaults(subcmd="list")
 	subp = subps.add_parser("mountAll", help="mount all points", aliases=["m"])
+	subp.add_argument("-o", "--over-dirty", action="store_true", default=False,
+	  help="proceed mounting even if git working tree is dirty, thereby hiding "
+	  "these changes. They will be OVERWRITTEN LATER if you (or a git hook) runs "
+	  "'u-git-restore', so pass this option only if you are OK with this!")
 	subp.set_defaults(subcmd="mountAll")
 	subp = subps.add_parser("umountAll", help="umount all points", aliases=["u"])
 	subp.set_defaults(subcmd="umountAll")
 	subp = subps.add_parser("umountForce", help="in INVALID state, umount all existing points")
 	subp.set_defaults(subcmd="umountForce")
+
+	subp = subps.add_parser("git-meta-r", aliases=["gmr"],
+	  help="read file metadata into .gitmeta",
+	  description="this should be used instead of running git-meta directly, because "
+	  "the latter will include metadata of files outside of bmounts that are owned by "
+	  "the current user, which would not be portable to systems where a different "
+	  "username is expected to handle these files. Using this subcommand avoids this "
+	  "problem; and you should install it instead of the usual `git meta -r` hook.")
+	subp.add_argument("--hook", action="store_true", default=False,
+	  help="install a pre-commit git hook into $GIT_DIR/hooks/pre-commit")
+	subp.add_argument("-s", "--stdout", action="store_true", default=False,
+	  help="output on stdout, not to .gitmeta or $GIT_DIR/hooks/pre-commit")
+	subp.set_defaults(subcmd="git-meta-r")
+
+	subp = subps.add_parser("u-git-restore", aliases=["ugr"],
+	  help="restore files **underneath the bmount** using the current git commit ",
+	  description="this can be run optionally as a post-commit hook to keep your "
+	  "files **underneath the bmount** up-to-date with the latest git history. This "
+	  "helps you avoid surprising situations where you make and commit many changes "
+	  "then run 'umountAll', then are faced with all the old file contents that "
+	  "existed before you ran 'mountAll' originally, which might have been from ages "
+	  "ago, and which may be surprising or counterintuitive to you.")
+	subp.add_argument("--hook", action="store_true", default=False,
+	  help="install a pre-commit git hook into $GIT_DIR/hooks/post-commit")
+	subp.add_argument("-s", "--stdout", action="store_true", default=False,
+	  help="output on stdout, not to $GIT_DIR/hooks/post-commit")
+	subp.set_defaults(subcmd="u-git-restore", over_dirty=True)
 
 	opts = parser.parse_args(args)
 	if hasattr(opts, "dry_run") and opts.dry_run and opts.verbose < 2:
@@ -599,7 +672,7 @@ def main(*args):
 		else:
 			raise ValueError("multiple %s found in %s: %s" % (fn, opts.binddir_down, cands))
 
-	b = BindFile(fn)
+	b = BindFile(opts, fn)
 
 	if not hasattr(opts, "subcmd"):
 		parser.error("must specify a subcommand")
@@ -641,6 +714,72 @@ def main(*args):
 	if opts.subcmd in ["mountAll", "umountAll", "umountForce"]:
 		b.load()
 		getattr(b.bind, opts.subcmd)()
+
+	if opts.subcmd == "git-meta-r":
+		if b.git_dir is None:
+			raise ValueError("not in a git repo")
+
+		if opts.hook:
+			install_git_hook(opts.stdout, b.git_dir, "pre-commit", opts.subcmd)
+			return 0
+
+		b.load()
+		if b.bind.status != "FULL":
+			raise ValueError(f"status is not FULL, you should run 'mountAll' first before '{opts.subcmd}'")
+
+		pts = [p_to_rel(pp) for pp in b.bind.points.pts]
+		output = subprocess.check_output(["git", "meta", "-r", "-s"])
+		with (sys.stdout if opts.stdout else open(".gitmeta", "w")) as fp:
+			logging.info("writing metadata to %s", fp.name)
+			for line in output.decode("utf-8").splitlines():
+				path, metadata = line.split(maxsplit=1)
+				if any(os.path.commonpath([pp, path]) == pp for pp in pts):
+					print(line, file=fp)
+
+	if opts.subcmd == "u-git-restore":
+		if b.git_dir is None:
+			raise ValueError("not in a git repo")
+
+		if opts.hook:
+			install_git_hook(opts.stdout, b.git_dir, "post-commit", opts.subcmd)
+			return 0
+
+		b.load()
+		if b.bind.status != "FULL":
+			raise ValueError(f"status is not FULL, you should run 'mountAll' first before '{opts.subcmd}'")
+
+		# we use sudo as we may not have permissions to read files when FULL,
+		# in which case a regular "git diff" pessimistically returns non-zero
+		# we also need --preserve-env=SUDO_UID to bypass a too-strict git check
+		# since we might be running these hooks inside sudo itself
+		dirty = subprocess.call("sudo --preserve-env=SUDO_UID,SUDO_GID git diff --quiet".split()) != 0
+		logging.info(f"dirty {dirty}")
+		if dirty:
+			# stash unconditionally since the changes may be something outside
+			# of bmount paths, which `git restore` would overwrite later.
+			# TODO [#C]: refine this to only run in that case, but for now we are lazy
+			subprocess.check_call("sudo --preserve-env=SUDO_UID,SUDO_GID git stash".split())
+		try:
+			b.bind.umountAll()
+			try:
+				subprocess.check_call("git restore .".split())
+			except:
+				logging.warning("git restore failed")
+				raise
+			finally:
+				b.bind.mountAll()
+		except:
+			logging.warning("umount-restore-mount failed")
+			raise
+		finally:
+			if dirty:
+				# we must have run "git stash" successfully due to check_call
+				subprocess.check_call("sudo --preserve-env=SUDO_UID,SUDO_GID git stash pop".split())
+			uid = os.getenv('SUDO_UID', os.getuid())
+			gid = os.getenv('SUDO_GID', os.getgid())
+			# restore correct permissions
+			subprocess.check_call(["sudo", "chown", "-R", f"{uid}:{gid}", b.git_dir])
+			subprocess.check_call(["sudo", "chmod", "-R", "u=rwX,og=rX", b.git_dir])
 
 	return 0
 

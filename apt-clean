@@ -158,6 +158,7 @@ touch "$STATE" "$STATE.tmp" "$STATE.round" || abort 3 "cannot write to one of $S
 cleanup() { rm -f "$STATE.tmp" "$STATE.round" 2>/dev/null; exit; }
 trap 'excode=$?; cleanup; trap - EXIT; exit $excode' EXIT HUP INT QUIT PIPE TERM
 
+# FIXME: this check is too strict, should ignore held packages
 test -z "$(aptitude search "(~prequired|~E) $CUR_ARCH !~i")" || abort 4 "Your system appears to be FUBAR, try \`aptitude install '(~prequired|~E) $CUR_ARCH'\`."
 test -n "$(git ls-tree HEAD -- "$STATE")" && USING_GIT=true
 

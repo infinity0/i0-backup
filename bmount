@@ -466,14 +466,19 @@ class BindFile(object):
 		try:
 			self.git_dir = subprocess.check_output(
 			  ["git", "-C", self.dir(), "rev-parse", "--path-format=absolute", "--git-dir"],
-			  stderr=subprocess.DEVNULL).decode("utf-8").rstrip()
+			  stderr=subprocess.PIPE).decode("utf-8").rstrip()
 			self.git_top = subprocess.check_output(
 			  ["git", "-C", self.dir(), "rev-parse", "--path-format=absolute", "--show-toplevel"],
-			  stderr=subprocess.DEVNULL).decode("utf-8").rstrip()
+			  stderr=subprocess.PIPE).decode("utf-8").rstrip()
 		except subprocess.CalledProcessError as e:
-			# rev-parse is only documented as "return non-zero" on failure, not specifically 128
-			self.git_dir = None
-			self.git_top = None
+			err = e.stderr.decode("utf-8")
+			if "not a git repo" in err:
+				# rev-parse is only documented as "return non-zero" on failure, not specifically 128
+				self.git_dir = None
+				self.git_top = None
+			else:
+				print(err, end="", file=sys.stderr)
+				raise
 
 	def dir(self):
 		return os.path.dirname(os.path.abspath(self.fn))
@@ -566,6 +571,14 @@ bmount {subcmd}
 	if not stdout:
 		os.chmod(hookfile, os.stat(hookfile).st_mode | 0o0111)
 
+def reset_git_access(git_dir):
+	# we might be running inside sudo
+	uid = os.getenv('SUDO_UID', os.getuid())
+	gid = os.getenv('SUDO_GID', os.getgid())
+	# restore correct permissions
+	subprocess.check_call(["sudo", "chown", "-R", f"{uid}:{gid}", git_dir])
+	subprocess.check_call(["sudo", "chmod", "-R", "u+rwX,og+rX", git_dir])
+
 def main(*args):
 	parser = argparse.ArgumentParser()
 	parser.add_argument("-f", "--file", help="bind file to load and save, default \"%(default)s\".",
@@ -648,6 +661,12 @@ def main(*args):
 	subp.add_argument("-s", "--stdout", action="store_true", default=False,
 	  help="output on stdout, not to $GIT_DIR/hooks/post-commit")
 	subp.set_defaults(subcmd="u-git-restore", over_dirty=True)
+
+	subp = subps.add_parser("reset-git-access", aliases=["rga"],
+	  help="reset git access after running 'sudo git'",
+	  description="this subcmd is used internally in some bmount workflows but we "
+	  "also provide it externally in case you need to run it manually.")
+	subp.set_defaults(subcmd="reset-git-access")
 
 	opts = parser.parse_args(args)
 	if hasattr(opts, "dry_run") and opts.dry_run and opts.verbose < 2:
@@ -772,14 +791,18 @@ def main(*args):
 			logging.warning("umount-restore-mount failed")
 			raise
 		finally:
-			if dirty:
-				# we must have run "git stash" successfully due to check_call
-				subprocess.check_call("sudo --preserve-env=SUDO_UID,SUDO_GID git stash pop".split())
-			uid = os.getenv('SUDO_UID', os.getuid())
-			gid = os.getenv('SUDO_GID', os.getgid())
-			# restore correct permissions
-			subprocess.check_call(["sudo", "chown", "-R", f"{uid}:{gid}", b.git_dir])
-			subprocess.check_call(["sudo", "chmod", "-R", "u=rwX,og=rX", b.git_dir])
+			try:
+				if dirty:
+					# we must have run "git stash" successfully due to check_call being outside try
+					subprocess.check_call("sudo --preserve-env=SUDO_UID,SUDO_GID git stash pop".split())
+			finally:
+				reset_git_access(b.git_dir)
+
+	if opts.subcmd == "reset-git-access":
+		if b.git_dir is None:
+			raise ValueError("not in a git repo")
+
+		reset_git_access(b.git_dir)
 
 	return 0
 

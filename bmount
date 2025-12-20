@@ -465,7 +465,7 @@ class BindFile(object):
 		self.opts = opts # used for e.g. over_dirty in _mountTry()
 		try:
 			self.git_dir = subprocess.check_output(
-			  ["git", "-C", self.dir(), "rev-parse", "--path-format=absolute", "--git-dir"],
+			  ["git", "-C", self.dir(), "rev-parse", "--path-format=absolute", "--git-common-dir"],
 			  stderr=subprocess.PIPE).decode("utf-8").rstrip()
 			self.git_top = subprocess.check_output(
 			  ["git", "-C", self.dir(), "rev-parse", "--path-format=absolute", "--show-toplevel"],

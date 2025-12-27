@@ -87,15 +87,17 @@ rundiff() {(
 		rm -rf "$tempdir"
 	}
 	trap 'x=$?; cleanup; trap - EXIT' EXIT HUP INT QUIT PIPE TERM
+	# apply excludes to local copy
+	DRYRUN=false CONFIRM=false rrsync env "$dir_l"     "$tempdir/l" "$subdir" -q $RSYNC_FLAGS
 	# sync using local copy first, to save some bandwidth
-	DRYRUN=false CONFIRM=false rrsync env "$dir_l" "$tempdir" "$subdir" -q $RSYNC_FLAGS
-	DRYRUN=false CONFIRM=false rrsync env "$dir_r" "$tempdir" "$subdir" -q $RSYNC_FLAGS
+	DRYRUN=false CONFIRM=false rrsync env "$tempdir/l" "$tempdir/r" "$subdir" -q $RSYNC_FLAGS
+	DRYRUN=false CONFIRM=false rrsync env "$dir_r"     "$tempdir/r" "$subdir" -q $RSYNC_FLAGS
 	case "$direc" in
 	u|up)
-		$DIFF -Nru "$tempdir" "$dir_l" | less -R
+		$DIFF -Nru "$tempdir/r" "$tempdir/l" | less -R
 		;;
 	d|down)
-		$DIFF -Nru "$dir_l" "$tempdir" | less -R
+		$DIFF -Nru "$tempdir/l" "$tempdir/r" | less -R
 		;;
 	esac
 )}

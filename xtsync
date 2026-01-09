@@ -20,13 +20,23 @@ rrsync() {
 
 	dir_src="${dir_src%/}/"
 	dir_dst="${dir_dst%/}/"
-	local xall='/*'
-	if [[ "$subdir" == "." ]]; then
-		xall=''
-	fi
+	# setup rsync includes/excludes to only include our specific subdir
+	local inexcl=()
+	local inexclq=
+	while [[ "$subdir" != "." ]]; do
+		inexcl+=( "--include=/$subdir" )
+		inexclq="$inexclq %q"
+		subdir="$(dirname "$subdir")"
+		if [[ "$subdir" != "." ]]; then
+			inexcl+=( "--exclude=/$subdir/*" )
+		else
+			inexcl+=( "--exclude=/*" )
+		fi
+		inexclq="$inexclq %q"
+	done
 
 	if $DRYRUN; then
-		printf "${PS4}cat <<'eof' | rsync -n --exclude-from=- --include=/%q --exclude='%s' $* %q %q\n" "$subdir" "$xall" "$dir_src" "$dir_dst"
+		printf "${PS4}cat <<'eof' | rsync -n --exclude-from=-${inexclq} $* %q %q\n" "${inexcl[@]}" "$dir_src" "$dir_dst"
 		xtsync_excludes
 		printf "eof\n"
 		return
@@ -34,13 +44,13 @@ rrsync() {
 
 	if $CONFIRM; then
 		"$run" rsync -n \
-		  --exclude-from=<(xtsync_excludes) --include="/$subdir" --exclude="$xall" \
+		  --exclude-from=<(xtsync_excludes) "${inexcl[@]}" \
 		  "$@" "$dir_src" "$dir_dst" 2>&1 | less
 		read -p "Execute this run? [y/N] " x
 		test "$x" = "y" || return 1
 	fi
 	"$run" rsync \
-	  --exclude-from=<(xtsync_excludes) --include="/$subdir" --exclude="$xall" \
+	  --exclude-from=<(xtsync_excludes) "${inexcl[@]}" \
 	  "$@" "$dir_src" "$dir_dst"
 }
 
@@ -140,7 +150,7 @@ run() {(
 
 	# we must set the transfer-root to the same directory where .xtsync.rc is
 	# so that rsync interprets the exclude rules correctly. to select the right
-	# subdir within this, we pass --include="/$subdir" --exclude="/*"
+	# subdir within this, we pass various include/exclude args in rrsync above
 	local dir_l="$(cd "$dir"; findconfig .xtsync.rc || true)"
 	if [ -f "$dir_l/.xtsync.rc" ]; then
 		. "$dir_l/.xtsync.rc"
@@ -176,7 +186,7 @@ run() {(
 	fi
 
 	local subdir="$(realpath --relative-to="$dir_l" "$dir")"
-	local dir_r="$base_r/${dir_l#$base_l}"
+	local dir_r="$base_r${dir_l#$base_l}" # appends either "" or "/something" to base_r
 
 	if [[ -n "$DEBUG" ]]; then
 		echo >&2 "dir_l  $dir_l"
